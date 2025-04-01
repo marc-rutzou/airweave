@@ -31,8 +31,6 @@ class SyncOrchestrator:
                 # Process entities through the stream
                 await self._process_entity_stream(source_node, sync_context, db)
 
-                # Finalize and return sync
-                await sync_context.progress.finalize()
                 return sync_context.sync
 
         except Exception as e:
@@ -64,7 +62,9 @@ class SyncOrchestrator:
                 raise
             finally:
                 # Ensure we finalize progress
+                logger.info(f"\nAbout to finalize sync {sync_context.sync.id} for job {sync_context.sync_job.id}\n")
                 await sync_context.progress.finalize()
+                logger.info(f"\nFinalize completed for sync {sync_context.sync.id}, job {sync_context.sync_job.id}\n")
 
     async def _process_stream_with_concurrency(
         self,
@@ -102,6 +102,10 @@ class SyncOrchestrator:
             pending_tasks.add(task)
 
             task.add_done_callback(lambda t: self._handle_task_completion(t, pending_tasks))
+
+            logger.info("\n\nONLY TEST 1 ENTITY\n\n")
+            stream.cancel()
+            break
 
             # If we have too many pending tasks, wait for some to complete
             if len(pending_tasks) >= MAX_WORKERS * 2:
@@ -162,6 +166,8 @@ class SyncOrchestrator:
         Args:
             pending_tasks: Set of pending tasks
         """
+        logger.info(f"Waiting for final {len(pending_tasks)} tasks to complete")
+        
         while pending_tasks:
             wait_tasks = list(pending_tasks)[: MAX_WORKERS * 2]
             done, pending_tasks_remaining = await asyncio.wait(
@@ -191,6 +197,11 @@ class SyncOrchestrator:
                     # Re-raise critical exceptions
                     if isinstance(e, (KeyboardInterrupt, SystemExit)):
                         raise
+
+            # After each wait cycle
+            logger.info(f"Tasks remaining after wait cycle: {len(pending_tasks)}")
+        
+        logger.info("All pending tasks completed successfully")
 
     async def _process_entity_with_semaphore(
         self,
