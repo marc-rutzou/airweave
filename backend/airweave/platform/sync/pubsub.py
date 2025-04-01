@@ -3,9 +3,16 @@
 import asyncio
 from typing import Optional
 from uuid import UUID
+from airweave.core.logging import logger
 
 from pydantic import BaseModel
 
+from airweave.db.session import get_db_context  
+from airweave import crud
+from airweave.schemas.sync_job import SyncJobUpdate
+from airweave.core.shared_models import SyncJobStatus
+from datetime import datetime
+from airweave.core.config import settings
 
 class SyncProgressUpdate(BaseModel):
     """Sync progress update data structure."""
@@ -30,8 +37,10 @@ class SyncJobTopic:
     async def publish(self, update: SyncProgressUpdate) -> None:
         """Publish an update to all subscribers."""
         self.latest_update = update
+        logger.info(f"\nPublishing update with is_complete={update.is_complete} to {len(self.queues)} subscribers\n")
         for queue in self.queues:
             await queue.put(update)
+        logger.info(f"\nUpdate published to all subscribers\n")
 
     async def add_subscriber(self) -> asyncio.Queue:
         """Add a new subscriber and send them the latest update if available."""
@@ -67,11 +76,15 @@ class SyncPubSub:
 
     async def publish(self, job_id: UUID, update: SyncProgressUpdate) -> None:
         """Publish an update to a specific job topic."""
+        logger.info(f"Publishing update for job {job_id}, is_complete={update.is_complete}")
         topic = self.get_or_create_topic(job_id)
         await topic.publish(update)
         # If the update indicates completion, schedule topic removal
         if update.is_complete:
+            logger.info(f"Update indicates completion, removing topic for job {job_id}")
             self.remove_topic(job_id)
+        else:
+            logger.info(f"Update does not indicate completion for job {job_id}")
 
     async def subscribe(self, job_id: UUID) -> asyncio.Queue:
         """Subscribe to a job's updates, creating the topic if it doesn't exist."""
@@ -118,10 +131,56 @@ class SyncProgress:
         """Publish current progress."""
         await sync_pubsub.publish(self.job_id, self.stats)
 
-    async def finalize(self, is_complete: bool = True) -> None:
-        """Publish final progress."""
+    async def finalize(self, is_complete: bool = True, error: str = None) -> None:
+        """Publish final progress and update database status."""
+        
+        logger.info(f"SyncProgress.finalize called for job {self.job_id} with is_complete={is_complete}")
+        
+        # Update the database record
+        async with get_db_context() as db:
+            try:
+                # Get the existing job
+                job = await crud.sync_job.get(db, id=self.job_id)
+                if job:
+                    # Get the superuser for system operations
+                    system_user = await crud.user.get_by_email(db, email=settings.FIRST_SUPERUSER)
+                    
+                    # Create timestamp without timezone info for database compatibility
+                    current_time = datetime.now()
+                    
+                    # Create the update object
+                    job_update = SyncJobUpdate(
+                        status=SyncJobStatus.COMPLETED if is_complete else SyncJobStatus.FAILED,
+                        records_created=self.stats.inserted,
+                        records_updated=self.stats.updated,
+                        records_deleted=self.stats.deleted,
+                        error=error,
+                        completed_at=current_time if is_complete else None,
+                        failed_at=None if is_complete else current_time,
+                    )
+                    
+                    # Update the job in the database using the system user
+                    await crud.sync_job.update(
+                        db=db, 
+                        db_obj=job, 
+                        obj_in=job_update, 
+                        current_user=system_user
+                    )
+                    logger.info(f"Updated database status for job {self.job_id} to "
+                              f"{'COMPLETED' if is_complete else 'FAILED'}")
+                else:
+                    logger.error(f"Could not find job {self.job_id} in database")
+            except Exception as e:
+                logger.error(f"Error updating job status: {str(e)}")
+        
+        # Update the SSE status
         self.stats.is_complete = is_complete
+        if error:
+            self.stats.is_failed = True
+        
+        logger.info(f"About to publish final update for job {self.job_id}")
         await self._publish()
+        logger.info(f"Final update published for job {self.job_id}")
 
 
 # Create a global instance for the entire app
