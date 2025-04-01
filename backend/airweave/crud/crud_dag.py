@@ -3,11 +3,12 @@
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from airweave import schemas
+from airweave.core.logging import logger
 from airweave.crud._base import CRUDBase
 from airweave.db.unit_of_work import UnitOfWork
 from airweave.models.dag import (
@@ -95,12 +96,17 @@ class CRUDSyncDag(CRUDBase[SyncDag, SyncDagCreate, SyncDagUpdate]):
     ) -> SyncDag:
         """Update a DAG with its nodes and edges."""
         # Update DAG fields
-        db_obj = await self.update(db, db_obj=db_obj, obj_in=obj_in, current_user=current_user)
-
-        # If nodes provided, replace all nodes
+        # Extract update data for simple fields
+        update_data = obj_in.model_dump(exclude={"nodes", "edges"}, exclude_unset=True) 
+        
+        # Update simple fields using the base update method
+        simple_update = SyncDagUpdate(**update_data)
+        db_obj = await self.update(db, db_obj=db_obj, obj_in=simple_update, current_user=current_user)
+        
+        # Handle nodes separately
         if obj_in.nodes is not None:
             # Delete existing nodes (cascade will handle edges)
-            await db.execute(select(DagNode).where(DagNode.dag_id == db_obj.id).delete())
+            await db.execute(delete(DagNode).where(DagNode.dag_id == db_obj.id))
             # Create new nodes
             for node_in in obj_in.nodes:
                 node_data = node_in.model_dump()
@@ -117,12 +123,13 @@ class CRUDSyncDag(CRUDBase[SyncDag, SyncDagCreate, SyncDagUpdate]):
         # If edges provided, replace all edges
         if obj_in.edges is not None:
             # Delete existing edges
-            await db.execute(select(DagEdge).where(DagEdge.dag_id == db_obj.id).delete())
+            await db.execute(delete(DagEdge).where(DagEdge.dag_id == db_obj.id))
             # Create new edges
             for edge_in in obj_in.edges:
+                edge_data = edge_in.model_dump()
                 db_edge = DagEdge(
-                    from_node_id=edge_in.from_node_id,
-                    to_node_id=edge_in.to_node_id,
+                    from_node_id=edge_data["from_node_id"],
+                    to_node_id=edge_data["to_node_id"],
                     dag_id=db_obj.id,
                     organization_id=current_user.organization_id,
                     created_by_email=current_user.email,
@@ -132,7 +139,7 @@ class CRUDSyncDag(CRUDBase[SyncDag, SyncDagCreate, SyncDagUpdate]):
 
         await db.commit()
         await db.refresh(db_obj)
-
+        
         # Reload with relationships
         result = await db.execute(
             select(SyncDag)
