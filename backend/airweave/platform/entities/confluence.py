@@ -27,10 +27,10 @@ from typing import Any, Dict, Optional
 
 from pydantic import Field
 
-from airweave.platform.entities._base import ChunkEntity
+from airweave.platform.entities._base import ChunkEntity, FileEntity
 
 
-class ConfluenceSpaceEntity(ChunkEntity):
+class ConfluenceSpaceEntity(FileEntity):
     """Schema for a Confluence Space.
 
     See:
