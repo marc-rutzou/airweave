@@ -5,7 +5,9 @@ from typing import Any, AsyncGenerator, ClassVar, List, Optional
 
 from pydantic import BaseModel
 
+from airweave.core.logging import logger
 from airweave.platform.entities._base import ChunkEntity
+from airweave.platform.file_handling.file_manager import file_manager
 
 
 class BaseSource:
@@ -29,6 +31,46 @@ class BaseSource:
     async def generate_entities(self) -> AsyncGenerator[ChunkEntity, None]:
         """Generate entities for the source."""
         pass
+
+    async def process_file_entity(
+        self, file_entity, download_url=None, access_token=None, headers=None
+    ) -> Optional[ChunkEntity]:
+        """Process a file entity with automatic size limit checking.
+
+        Args:
+            file_entity: The FileEntity to process
+            download_url: Override the download URL (uses entity.download_url if None)
+            access_token: OAuth token for authentication
+            headers: Custom headers for the download
+
+        Returns:
+            The processed entity if it should be included, None if it should be skipped
+        """
+        # Use entity download_url if not explicitly provided
+        url = download_url or file_entity.download_url
+        if not url:
+            logger.warning(f"No download URL for file {file_entity.name}")
+            return None
+
+        # Create stream
+        file_stream = file_manager.stream_file_from_url(
+            url, access_token=access_token or getattr(self, "access_token", None), headers=headers
+        )
+
+        # Process entity
+        processed_entity = await file_manager.handle_file_entity(
+            stream=file_stream, entity=file_entity
+        )
+
+        # Skip if file was too large
+        if hasattr(processed_entity, "should_skip") and processed_entity.should_skip:
+            logger.warning(
+                f"Skipping file {processed_entity.name}: "
+                f"{processed_entity.metadata.get('error', 'Unknown reason')}"
+            )
+            return None
+
+        return processed_entity
 
 
 class Relation(BaseModel):

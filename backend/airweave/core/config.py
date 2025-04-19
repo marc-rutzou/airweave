@@ -33,6 +33,8 @@ class Settings(BaseSettings):
             destinations, and entity types.
         QDRANT_URL (str): The Qdrant URL.
         TEXT2VEC_INFERENCE_URL (str): The URL for text2vec-transformers inference service.
+        OPENAI_API_KEY (Optional[str]): The OpenAI API key.
+        MISTRAL_API_KEY (Optional[str]): The Mistral AI API key.
     """
 
     PROJECT_NAME: str = "Airweave"
@@ -62,6 +64,7 @@ class Settings(BaseSettings):
     TEXT2VEC_INFERENCE_URL: str = "http://localhost:9878"
 
     OPENAI_API_KEY: Optional[str] = None
+    MISTRAL_API_KEY: Optional[str] = None
 
     @field_validator("SQLALCHEMY_ASYNC_DATABASE_URI", mode="before")
     def assemble_db_connection(cls, v: Optional[str], info: ValidationInfo) -> PostgresDsn:

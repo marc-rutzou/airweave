@@ -14,7 +14,6 @@ from airweave.platform.entities.dropbox import (
     DropboxFileEntity,
     DropboxFolderEntity,
 )
-from airweave.platform.file_handling.file_manager import file_manager
 from airweave.platform.sources._base import BaseSource
 
 
@@ -368,19 +367,16 @@ class DropboxSource(BaseSource):
                     file_entity = self._create_file_entity(entry, folder_breadcrumbs)
 
                     try:
-                        # Create a custom streaming function for this file
-                        file_stream = file_manager.stream_file_from_url(
-                            file_entity.download_url,
+                        # Use the BaseSource helper method instead of direct file_manager calls
+                        processed_entity = await self.process_file_entity(
+                            file_entity=file_entity,
                             access_token=self.access_token,
                             headers=file_entity.sync_metadata.get("headers"),
                         )
 
-                        # Process the file entity (download, checksum, etc.)
-                        processed_entity = await file_manager.handle_file_entity(
-                            stream=file_stream, entity=file_entity
-                        )
-
-                        yield processed_entity
+                        # Only yield if the file wasn't skipped due to size limits
+                        if processed_entity:
+                            yield processed_entity
 
                     except Exception as e:
                         logger.error(f"Failed to process file {file_entity.name}: {str(e)}")

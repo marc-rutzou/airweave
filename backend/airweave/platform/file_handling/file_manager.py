@@ -28,20 +28,23 @@ class FileManager:
         self,
         stream: AsyncIterator[bytes],
         entity: FileEntity,
-        chunk_size: int = 8192,
-    ) -> FileEntity | None:
+        max_size: int = 1024 * 1024 * 1024,  # 1GB limit
+    ) -> FileEntity:
         """Process a file entity by saving its stream and enriching the entity.
 
         Args:
             stream: An async iterator yielding file chunks
             entity: The file entity to process
-            chunk_size: Size of chunks to process
+            max_size: Maximum allowed file size in bytes (default: 1GB)
 
         Returns:
-            The enriched file entity
+            The enriched file entity with should_skip flag set if too large
         """
         if not entity.download_url:
             return entity
+
+        # Initialize a flag to indicate if this entity should be skipped
+        entity.should_skip = False
 
         file_uuid = uuid4()
         safe_filename = self._safe_filename(entity.name)
@@ -51,9 +54,34 @@ class FileManager:
             downloaded_size = 0
             async with aiofiles.open(temp_path, "wb") as f:
                 async for chunk in stream:
-                    await f.write(chunk)
                     downloaded_size += len(chunk)
-                    # TODO: Implement safety check that skips file if size exceeds 1 GB
+
+                    # Safety check to skip files exceeding max size
+                    if downloaded_size > max_size:
+                        logger.warning(
+                            f"File {entity.name} exceeded maximum size"
+                            f"limit of {max_size / (1024 * 1024 * 1024):.1f}GB. "
+                            f"Download aborted at {downloaded_size / (1024 * 1024):.1f}MB."
+                        )
+                        # Clean up the partial file
+                        await f.close()
+                        if os.path.exists(temp_path):
+                            os.remove(temp_path)
+
+                        # Add warning to entity metadata
+                        if not entity.metadata:
+                            entity.metadata = {}
+                        entity.metadata["error"] = (
+                            f"File too large (exceeded "
+                            f"{max_size / (1024 * 1024 * 1024):.1f}GB limit)"
+                        )
+                        entity.metadata["size_exceeded"] = downloaded_size
+
+                        # Set the skip flag
+                        entity.should_skip = True
+                        return entity
+
+                    await f.write(chunk)
 
                     # Log progress for large files
                     if entity.total_size and entity.total_size > 10 * 1024 * 1024:  # 10MB
